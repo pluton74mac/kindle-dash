@@ -1,0 +1,107 @@
+# DECISIONS — Kindle the agent Dashboard
+
+## 2026-07-16 — D01: Kindle viewer architecture: hybrid shell + C touch helper
+
+**Decision:** The Kindle viewer will be a shell script (curl + jq + eips) paired with a ~50-line C touch helper. Not a full C binary, not Python on Kindle.
+
+**Context:** Three options were evaluated — full C binary (kdashboard pattern), pure shell (curl + eips), and Python on Kindle. A 10-dimension comparison was conducted across reliability, ease of implementation, rendering speed, touch handling, expandability, power efficiency, debuggability, maintenance burden, binary distribution, and sleep/wake lifecycle.
+
+**Rationale:**
+- **Iteration speed:** Shell is editable in place (scp + run). C requires cross-compilation (Zig or arm-linux-gnueabi-g++) for every change. 10x faster iteration with shell.
+- **Debuggability:** `set -x` produces readable logs. C segfaults on Kindle are nearly impossible to debug without valgrind or proper gdb support.
+- **Touch quality:** The 50-line C helper provides EVIOCGRAB (exclusive touch), coordinate scaling via EVIOCGABS, and 700ms debounce — all the touch advantages of full C, in a trivial program compiled once.
+- **Rendering speed:** C direct framebuffer write is ~200ms faster than `eips -g` PNG decode. But e-ink panel refresh takes 300-500ms regardless — the difference is imperceptible for full-screen view swaps.
+- **Production reliability:** homecircuits.eu project proves shell-based image-push with full error recovery (atomic downloads, progressive backoff, auto-reboot) works in production for weeks.
+- **Design philosophy:** "Kindle is dumb, server is smart." The shell is a thin router — new features almost always live server-side.
+
+**Rejected alternatives:**
+- **Full C binary:** Rejected due to cross-compilation burden, slow iteration, and debugging difficulty. Would only be justified for real-time partial updates or animations — not our use case.
+- **Python on Kindle:** Rejected due to no PIL/Pillow availability, 2-3s startup, no EVIOCGRAB for exclusive touch, and additional dependency (KUAL Python extension).
+- **Pure shell (no C):** Rejected because without EVIOCGRAB the Kindle framework would also receive touch events, causing unwanted UI responses. The 50-line C helper solves this cleanly.
+
+**Reference:** Full analysis at `llm_wiki/viewer-implementation-c-vs-shell.md`
+
+## 2026-07-16 — D02: Dashboard interface as MCP Server
+
+**Decision:** The Kindle Dashboard will be built as an MCP Server, not a skill or standalone service.
+
+**Context:** Multiple agents (sports coach, life coach, future agents) need to push data to the Kindle display. Evaluated three packaging options: Skill (teaches agents to render), MCP Server (shared service with tools), Standalone HTTP Service (agents POST via curl).
+
+**Rationale:**
+- The Kindle dashboard is shared infrastructure, not an agent capability — multiple agents push data TO it independently.
+- Agents shouldn't know about Pillow, eips, tap maps, or Kindle internals. They call `update_view(path, data)` and the MCP handles rendering, tap maps, HTTP serving, and view tree.
+- MCP gives every connected agent a first-class, discoverable tool interface.
+- A skill would mean each agent runs its own server, fights over port 8888, and the Kindle only sees one agent's views at a time.
+- A standalone service would require agents to use `execute_code`/`terminal` to POST — no clean tool interface, no discoverability.
+
+**Rejected alternatives:**
+- **Skill:** Rejected because rendering, view tree management, and HTTP serving are infrastructure, not agent knowledge. Multiple agents loading the same skill would conflict (port, view tree, Kindle session).
+- **Standalone HTTP Service:** Functionally similar but inferior agent ergonomics — no tool interface, no type safety, agents would need `execute_code` to interact.
+
+**Architecture:**
+```
+Sports Coach Agent    Life Coach Agent    Future Agent
+     │                     │                   │
+     │ update_view()        │ update_view()     │ register_view()
+     ▼                     ▼                   ▼
+┌──────────────────────────────────────────────────┐
+│           Kindle Dashboard MCP Server             │
+│  Tools: register_view, update_view,             │
+│         get_status, list_views, push_notification│
+│  Internal: Pillow rendering, HTTP server, tree   │
+└──────────────────────┬───────────────────────────┘
+                         │ HTTP
+                  ┌──────┴──────┐
+                  │   Kindle     │
+                  └─────────────┘
+```
+
+**Next step:** Grill the MCP design in a new session — tools, rendering templates, view registration, data schemas, multi-agent view tree.
+
+## 2026-07-24 — D03: MCP Server Design (Architecture Grill)
+
+**Decision:** Full MCP server design grilled and crystallized across 7 dimensions.
+
+**Context:** The spike proved the Kindle viewer (shell + C touch helper, PNG + tap map, touch navigation, exit). D02 decided the dashboard interface is an MCP server. This decision records the MCP architecture that emerged from the design grill.
+
+**Key design decisions:**
+
+1. **Rendering model — Typed view types (Model B).** Agents push `data = {type: "<view_type>", ...fields}`. MCP has builtin renderers per type. Agents never touch Pillow. Phase 1: 5 generic types (status_grid, metric_dashboard, text_list, chart_view, progress_view). Phase 2: agent-domain types (habit_tracker, mood_journal, etc.) added as agent data patterns are understood.
+
+2. **Home view — Fixed grid of agent slots (Option 3).** Each agent has a designated card position. `push_home_card(agent_id, title, summary, nav_target)` updates the agent's slot. No ordering, no priority — positions are fixed. Dashboard = "agent newspaper" where each agent contributes a front-page section.
+
+3. **View tree — Namespaced by agent.** Paths are `sports/readiness`, `life/habits`, `system/cron`. No path collisions. No registration step — `update_view` creates views on first push, overwrites on subsequent pushes. Implicit registration.
+
+4. **Freshness — No polling.** Kindle fetches on interaction only (tap, refresh button, wake from sleep). E-ink holds the image when idle — its superpower. Dropped the 60-min auto-refresh timer from the spike. The Kindle always gets the latest PNG on disk when it fetches.
+
+5. **Process lifecycle — Stdio MCP (Option A).** the agent-managed subprocess with HTTP server as background thread. `idle_timeout_seconds: 0`. PNGs + view metadata persisted to disk. Kindle offline cache covers the agent restart gaps. Subprocess respawns on next cron push, so the HTTP server is up when new data exists.
+
+6. **Extensibility — Builtin types only.** No custom renderers, no raw_image escape hatch. New types = code change to MCP. Safe because cronjobs are deterministic — no surprise data shapes. When a new need emerges, we add a type.
+
+7. **Cronjobs are the trigger.** Each agent has a scheduled cron job that fetches data and pushes to the dashboard. Agents don't sit in loops. The dashboard shows the last-pushed state.
+
+**Tool surface:**
+
+| Tool | Called by | Purpose |
+|------|----------|---------|
+| `update_view(path, data)` | Agent cron jobs | Push data to a view path, MCP renders PNG + tap map |
+| `push_home_card(agent_id, title, summary, nav_target)` | Agent cron jobs | Update the agent's card on the home grid |
+| `get_status()` | Agents, debugging | Kindle last seen, view count, agent list, port, uptime |
+| `list_views()` | Agents, debugging | All registered views with metadata |
+
+**HTTP endpoints (Kindle-facing, internal to MCP):**
+- `GET /view?path=<path>` → view protocol JSON (image ref + tap map)
+- `GET /images/<name>.png` → PNG bytes
+- `GET /health` → server health check
+
+**Rejected alternatives:**
+- **Freeform text data (Model A):** Can't do progress bars, sparklines, hero numbers — the things that make e-ink dashboards good.
+- **Layout DSL (Model C):** Over-engineered for ~10 views; designing the DSL becomes the project.
+- **Raw PNG (Model D):** Violates D02 — agents need Pillow + e-ink knowledge.
+- **MCP auto-generated home (Option 1):** Less control over card content.
+- **Orchestrator agent home (Option 2):** Single point of failure, extra agent.
+- **Push freshness (Option B):** Requires Kindle-side listener, breaks "dumb display" principle.
+- **HTTP MCP daemon (Option B):** More setup (launchd plist), unnecessary given disk persistence + Kindle cache.
+- **Custom renderers / raw_image escape hatch:** Violates D02, unnecessary given deterministic cron tasks.
+
+**Reference:** Full grill session in LOG.md (2026-07-24). MCP design spec at `llm_wiki/mcp-server-design.md`.

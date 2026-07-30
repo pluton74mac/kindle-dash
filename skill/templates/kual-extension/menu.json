@@ -1,0 +1,43 @@
+{
+	"items": [
+	{
+		"name": "Kindle Dashboard",
+		"priority": 0,
+		"items": [
+		{
+			"name": "Start Dashboard (interactive)",
+			"priority": 1,
+			"action": "/mnt/us/extensions/kindle-dash/bin/dash_interactive.sh",
+			"params": "http://SERVER_IP:8888",
+			"exitmenu": false
+		},
+		{
+			"name": "---"
+		},
+		{
+			"name": "Show Home (static test)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/show_static.sh",
+			"params": "home",
+			"exitmenu": false
+		},
+		{
+			"name": "Fetch from server (once)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/dash_viewer.sh",
+			"params": "http://SERVER_IP:8888 once",
+			"exitmenu": false
+		},
+		{
+			"name": "---"
+		},
+		{
+			"name": "Stop Dashboard",
+			"priority": 3,
+			"action": "/mnt/us/extensions/kindle-dash/bin/stop.sh",
+			"exitmenu": false
+		}
+		]
+	}
+	]
+}

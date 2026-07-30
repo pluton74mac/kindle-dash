@@ -1,0 +1,82 @@
+{
+	"items": [
+	{
+		"name": "Kindle Dashboard",
+		"priority": 0,
+		"items": [
+		{
+			"name": "Start Dashboard (interactive)",
+			"priority": 1,
+			"action": "/mnt/us/extensions/kindle-dash/bin/dash_interactive.sh",
+			"params": "http://YOUR_SERVER_IP:8888",
+			"exitmenu": false
+		},
+		{
+			"name": "---"
+		},
+		{
+			"name": "Show Home (static test)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/show_static.sh",
+			"params": "home",
+			"exitmenu": false
+		},
+		{
+			"name": "Show Coaching (static test)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/show_static.sh",
+			"params": "coaching_readiness",
+			"exitmenu": false
+		},
+		{
+			"name": "Show Cron (static test)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/show_static.sh",
+			"params": "cron_list",
+			"exitmenu": false
+		},
+		{
+			"name": "Show Calendar (static test)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/show_static.sh",
+			"params": "calendar_today",
+			"exitmenu": false
+		},
+		{
+			"name": "Show Workflows (static test)",
+			"priority": 2,
+			"action": "/mnt/us/extensions/kindle-dash/bin/show_static.sh",
+			"params": "workflows_active",
+			"exitmenu": false
+		},
+		{
+			"name": "---"
+		},
+		{
+			"name": "Stop Dashboard",
+			"priority": 3,
+			"action": "/mnt/us/extensions/kindle-dash/bin/stop.sh",
+			"exitmenu": false
+		},
+		{
+			"name": "---"
+		},
+		{
+			"name": "Install Screensaver",
+			"priority": 4,
+			"action": "/mnt/us/extensions/kindle-dash/bin/install_screensaver.sh",
+			"exitmenu": false
+		},
+		{
+			"name": "---"
+		},
+		{
+			"name": "Fix Linker (for linkss install)",
+			"priority": 5,
+			"action": "/mnt/us/extensions/kindle-dash/bin/fix_linker.sh",
+			"exitmenu": false
+		}
+		]
+	}
+	]
+}
