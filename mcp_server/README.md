@@ -4,11 +4,12 @@ An MCP server that turns a jailbroken Kindle into a shared e-ink dashboard for A
 agents. Point any number of MCP-capable agents at it — each one pushes structured
 data (`update_view`) and gets a designated card on the home screen
 (`push_home_card`); the server renders everything to PNG + tap maps with Pillow.
-The Kindle itself stays a dumb display (see the parent repo's
-[`spike/`](../spike/) for the shell + C viewer this serves).
+The Kindle itself stays a dumb display (see [`../kindle/`](../kindle/) for the
+shell + C viewer this serves).
 
-This implements the design in the parent project's `DECISIONS.md` (D02, D03) —
-read that first if you want the "why," this README is the "how."
+See the parent repo's [`README.md`](../README.md) for the full picture — jailbreak,
+KUAL deployment, and how this server fits in. This README is just the server's
+own install/config/tool reference.
 
 ## Install
 
@@ -45,12 +46,50 @@ uv run kindle-dash-mcp
 This starts the HTTP server (background thread) and the MCP stdio server
 (foreground, blocks). In practice you won't run it directly — your agent
 framework spawns it as a subprocess when it needs a tool call served. Point your
-Kindle's KUAL extension (`spike/kindle-dash/menu.json` in the parent repo) at
+Kindle's KUAL extension (`kindle/menu.json` in the parent repo) at
 `http://<this-machine>:8888`.
 
 ### Connecting an agent
 
-Any MCP client that can spawn a stdio server works. Generic config shape:
+#### Hermes Agent
+
+```sh
+./scripts/hermes-setup.sh
+```
+
+Installs `uv` standalone if needed, pre-resolves dependencies, creates a wrapper
+script at `~/.local/bin/kindle-dash-mcp`, and writes the server into
+`~/.hermes/config.yaml` (merges — doesn't touch your other MCP servers). Then
+type `/reload-mcp` in your Hermes chat.
+
+**Why a wrapper script, not a direct `command`+`args` entry?** Hermes can
+misparse `command`+`args` arrays in `config.yaml` — it's spawned the array's
+first *value* as the literal command instead of running `uv` with those args.
+The wrapper bundles `cd <this dir> && exec uv run kindle-dash-mcp` into one
+executable, so Hermes only ever needs a single `command` string. This is a
+Hermes packaging quirk, not anything about `kindle-dash-mcp` itself — the MCP
+server's tool logic and protocol handling are unchanged; verified end-to-end
+with the real `hermes mcp test kindle-dash` (connects, discovers all 4 tools).
+
+If you'd rather do it by hand: install `uv` standalone
+(`curl -LsSf https://astral.sh/uv/install.sh | sh` — a pip-installed `uv` won't
+be on Hermes' PATH), create the wrapper script yourself, then add it to
+`~/.hermes/config.yaml` under `mcp_servers.kindle-dash: {command: <wrapper path>}`
+(edit via Python + `yaml.safe_load`/`safe_dump`, not a text editor — Hermes
+guards this file from file-editing tools).
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Connection closed` in `hermes mcp test` | Another process already holds the HTTP port (stale `kindle-dash-mcp` from manual testing, or a second agent's copy) | `lsof -iTCP:8888 -sTCP:LISTEN`, kill the stale process |
+| `Failed to spawn: kindle-dash` | Hermes misparsing `command`+`args` | Use the wrapper script (above) |
+| `uv: command not found` | pip-installed `uv`, not standalone | Install standalone (see above) |
+| Other MCP servers disappeared from config | A setup step overwrote `mcp_servers` instead of merging | Use `hermes-setup.sh` or the Python-YAML merge pattern above, never a blind text overwrite |
+
+#### Other MCP clients
+
+Any MCP client that spawns a stdio server and correctly parses `command`+`args`
+works too (Hermes' quirk above is the exception, not the rule). Generic config
+shape:
 
 ```json
 {
@@ -127,16 +166,14 @@ light, `warning`/`caution` -> mid gray, `bad`/`low`/`critical`/`error` -> dark/b
 Every non-home view auto-gets a Back button (target: whatever `data["back"]`
 says, default `"home"`) and an Exit button — you don't draw those yourself.
 
-There is no custom-renderer escape hatch (DECISIONS.md D03) — if you need a 6th
-view type, add a renderer function to `renderers.py` and register it in
-`RENDERERS`, the same way the built-in 5 are defined.
+There is no custom-renderer escape hatch — if you need a 6th view type, add a
+renderer function to `renderers.py` and register it in `RENDERERS`, the same
+way the built-in 5 are defined.
 
 ## Why these design choices
 
-See the parent repo's `DECISIONS.md` D02/D03 for the full rationale (rejected
-alternatives included). Short version: no polling (the Kindle fetches only on
-tap/wake, e-ink holds the image when idle), disk is the source of truth (the
-HTTP server just serves whatever's on disk, so it doesn't matter whether an
-agent or even the MCP subprocess is currently running), and typed view types
-instead of a layout DSL (agents pick a type and hand over data, they never touch
-Pillow or tap-map geometry).
+No polling: the Kindle fetches only on tap/wake, e-ink holds the image when
+idle. Disk is the source of truth: the HTTP server just serves whatever's on
+disk, so it doesn't matter whether an agent or even the MCP subprocess is
+currently running. Typed view types instead of a layout DSL: agents pick a
+type and hand over data, they never touch Pillow or tap-map geometry.

@@ -1,204 +1,164 @@
-# Kindle E-Ink Dashboard
+# kindle-dash
 
-A server-driven e-ink dashboard on a jailbroken Kindle. The Kindle is a dumb display — a server generates PNG images + JSON tap maps, the Kindle fetches and displays them. A tiny C touch helper reads evdev input for tap navigation.
+Turn a jailbroken Kindle into a shared e-ink dashboard for AI agents. The Kindle
+stays a dumb display — a server renders PNG images + JSON tap maps, the Kindle
+fetches and displays them, and a tiny C touch helper handles taps. Any number of
+MCP-capable agents can push their own data to it: each one gets a card on the
+home screen and its own space of views underneath.
 
-**Proven on Kindle Paperwhite 4 (10th Gen, 2018)** — 6" 300 PPI e-ink, capacitive touch, WiFi, jailbroken with WinterBreak + KUAL.
-
-## Current State
-
-**Verified working end-to-end on real hardware.** Full pipeline confirmed via on-device logs — every button navigates correctly, back/exit work, and a full power-button sleep → wake cycle returns to the dashboard cleanly:
-- Python view server renders PNG + tap map over HTTP
-- Kindle shell viewer fetches, displays via `eips`, routes taps
-- C touch helper provides exclusive evdev reading (EVIOCGRAB)
-- Power button sleep/wake lifecycle (Kindle sleeps naturally, wakes to dashboard)
-- Offline cache — network down → last view stays on screen
-- Clean exit to Kindle home
-- **Tailscale support (optional, additive)** — the Kindle reaches the server over Tailscale instead of a plain LAN IP, so the same setup works both at home and away. See [Tailscale Setup](#tailscale-setup-optional) below.
-
-The ready-to-copy KUAL extension bundle (`config.xml` + `menu.json` + `bin/`) lives in [`spike/kindle-dash/`](spike/kindle-dash/) — see Quick Start below.
-
-**Also built:** a generalized multi-agent MCP server — [`mcp_server/`](mcp_server/), see [Future Directions](#mcp-server) below and [`mcp_server/README.md`](mcp_server/README.md).
-
-**Not yet built:**
-- Custom screensaver (abandoned — linkss unsupported on FW 5.16+)
+**Proven end-to-end on a Kindle Paperwhite 4** (10th Gen, 2018) — viewer, touch,
+power-button sleep/wake, and the MCP server all verified on real hardware.
 
 ## Architecture
 
 ```
-Server (Python)               Kindle (shell + C)
-┌──────────────┐            ┌──────────────────┐
-│ View Server   │  HTTP LAN  │ dash_interactive.sh│
-│ (Pillow PNG)  │───────────▶│ • curl fetch PNG   │
-│ + tap map JSON│            │ • eips -f -g display│
-│               │            │ • awk parse taps    │
-│ Data sources  │  pipe:x y  │ • hit test → navigate│
-│ → PIL render  │◀───────────│                     │
-│ → PNG + JSON  │            └──────┬─────────────┘
-└──────────────┘                   │ FIFO: "x y\n"
-                            ┌──────┴─────────────┐
-                            │ touch_tap (C, 50ln) │
-                            │ • EVIOCGRAB         │
-                            │ • evdev /dev/input  │
-                            │ • prints tap coords │
-                            └────────────────────┘
+Your agent(s)                MCP server (this repo)         Kindle (this repo)
+┌──────────┐    MCP tools    ┌──────────────────────┐  HTTP  ┌──────────────────┐
+│ Agent A   │───────────────▶│ update_view()         │───────▶│ dash_interactive │
+│ Agent B   │  push_home_    │ push_home_card()      │  LAN/  │ .sh: curl fetch  │
+│ ...       │  card()        │ → Pillow renders PNG   │  Tail- │ PNG, eips -f -g  │
+└──────────┘                │   + tap map, saves to  │  scale │ display, awk     │
+                             │   disk                 │        │ parses taps      │
+                             └───────────────────────┘        └────────┬─────────┘
+                                                                        │ FIFO
+                                                                ┌───────┴────────┐
+                                                                │ touch_tap (C)   │
+                                                                │ EVIOCGRAB, evdev│
+                                                                └────────────────┘
 ```
 
-**Core principle:** Kindle is dumb, server is smart. New screens = new Python functions, not Kindle code changes.
+## Requirements
+
+- A **jailbroken Kindle** with KUAL installed. This repo doesn't cover jailbreaking
+  — it's device/firmware-specific and changes over time. Use
+  [kindlemodding.org's jailbreak guide](https://kindlemodding.org/jailbreaking/jailbreak-faq.html)
+  (community-maintained, current as of writing) to get WinterBreak (or whatever
+  the current recommended method is for your model/firmware) and KUAL installed.
+- A machine to run the MCP server: Python 3.11+, reachable on the Kindle's LAN
+  (or via [Tailscale](#remote-access-tailscale-optional) for off-network access).
+- An MCP-capable agent — [Hermes Agent](#hermes-agent) is a one-command setup;
+  anything else that speaks MCP over stdio works too (see
+  [`mcp_server/README.md`](mcp_server/README.md)).
+
+**Proven on a Paperwhite 4 specifically.** The MCP server is hardware-agnostic
+(screen size is a config value), but the Kindle-side viewer — `touch_tap`'s touch
+driver assumptions, the shell script's busybox/LIPC behavior — was verified
+empirically on this device and firmware. A different model will very likely need
+some re-verification on your own hardware; see [`skill/SKILL.md`](skill/SKILL.md)
+for exactly what was verified and how, if you're porting it.
 
 ## Quick Start
 
-### Server (Mac/PC)
+### 1. Deploy the Kindle-side viewer
 
 ```sh
-# Requires Python 3.11+ with Pillow
-pip install Pillow
-
-# Start view server
-python3 spike/view_server.py
-
-# Verify
-curl http://localhost:8888/health
-curl http://localhost:8888/view?path=home
+# Set your server's IP/hostname in kindle/menu.json first (replace YOUR_SERVER_IP)
+cp -r kindle/ /Volumes/Kindle/extensions/kindle-dash/
+chmod +x /Volumes/Kindle/extensions/kindle-dash/bin/*
+find /Volumes/Kindle/extensions/kindle-dash -name '._*' -delete   # macOS resource forks break KUAL
 ```
 
-### Kindle
+Eject, unplug, then on the Kindle: **KUAL → Kindle Dashboard → Start Dashboard**.
 
-1. **Update the server IP** in `spike/kindle-dash/menu.json` — replace `YOUR_SERVER_IP` with your server's LAN IP (the `params` field passed to `dash_interactive.sh`).
-
-2. **Copy the KUAL extension** (Kindle mounted via USB as a mass-storage volume):
-```sh
-cp -r spike/kindle-dash/ /Volumes/Kindle/extensions/kindle-dash/
-chmod +x /Volumes/Kindle/extensions/kindle-dash/bin/*.sh /Volumes/Kindle/extensions/kindle-dash/bin/touch_tap
-
-# CRITICAL: Clean macOS resource fork files — they break KUAL
-find /Volumes/Kindle/extensions/kindle-dash -name '._*' -delete
-```
-
-3. Eject the Kindle, unplug, then **launch via KUAL** → Kindle Dashboard → Start Dashboard (interactive).
-
-### Cross-Compiling touch_tap (only if you need to rebuild)
+### 2. Run the MCP server
 
 ```sh
-# Install Zig
-curl -sL https://ziglang.org/download/0.13.0/zig-macos-aarch64-0.13.0.tar.xz -o /tmp/zig.tar.xz
-cd /tmp && tar xf zig.tar.xz
-
-# Cross-compile for Kindle ARM — `-s` strips symbols (no debug info, no build-path leakage)
-/tmp/zig-macos-aarch64-0.13.0/zig cc -target arm-linux-musleabi -O2 -static -s -o touch_tap spike/touch_tap.c
-
-# Verify
-file touch_tap  # Should show: ELF 32-bit LSB executable, ARM, EABI5, statically linked, stripped
+cd mcp_server
+uv sync
+uv run kindle-dash-mcp
 ```
 
-A pre-compiled, stripped `spike/touch_tap` binary is included — you only need to recompile if you modify `touch_tap.c`. Always build with `-s`: an unstripped binary embeds the absolute build path (including your local username) in plain text, recoverable with `strings touch_tap`.
+Defaults to port 8888 (matching `kindle/menu.json`) and screen size 1072×1448
+(Paperwhite 4). See [`mcp_server/README.md`](mcp_server/README.md) for every
+config option (screen size, port, data directory, home-grid capacity).
+
+### 3. Connect an agent
+
+**Hermes Agent:**
+```sh
+cd mcp_server
+./scripts/hermes-setup.sh
+```
+One command: installs `uv` standalone if needed, creates a wrapper script,
+registers the server in `~/.hermes/config.yaml`, verifies the connection. Then
+`/reload-mcp` in your Hermes chat. Full details (why a wrapper script is needed,
+troubleshooting) in [`mcp_server/README.md`](mcp_server/README.md#connecting-an-agent).
+
+**Any other MCP client:**
+```json
+{
+  "mcpServers": {
+    "kindle-dash": {
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/mcp_server", "kindle-dash-mcp"]
+    }
+  }
+}
+```
+
+### 4. Push your first view
+
+Once connected, call `push_home_card(agent_id="demo", title="Hello", summary=["It works!"], nav_target="demo/hello")` and `update_view(path="demo/hello", data={"type": "text_list", "title": "Hello", "rows": [{"left": "First view", "right": "✓"}]})` from your agent. Tap the Kindle's power button (or the KUAL launch) to refresh and see it.
+
+## What agents can push
+
+5 built-in, typed view renderers — agents hand over structured data, never touch
+Pillow or tap-map geometry directly:
+
+| Type | Use case |
+|---|---|
+| `status_grid` | Grid of navigable cards (this is what the home screen is made of) |
+| `metric_dashboard` | Hero number + factor bars + an optional safety-gate banner |
+| `text_list` | Header + rows with a left/right column and a status marker |
+| `chart_view` | Hero value + sparkline + optional baseline + caption |
+| `progress_view` | Progress bars + an optional stacked bar + a bullet list |
+
+Full schema for each type, the 4-tool MCP surface (`update_view`,
+`push_home_card`, `get_status`, `list_views`), and every config option:
+[`mcp_server/README.md`](mcp_server/README.md).
+
+## Remote access (Tailscale, optional)
+
+Lets the Kindle reach the server from any network, not just home WiFi —
+Tailscale uses a direct connection when possible and falls back to its relay
+otherwise, so one config works everywhere. Purely additive: without it,
+everything above works exactly as described over plain LAN.
+
+1. A [Tailscale](https://tailscale.com) account, with the server machine already
+   joined to your tailnet.
+2. A Tailscale KUAL extension on the Kindle —
+   [mitanshu7/tailscale_kual](https://github.com/mitanshu7/tailscale_kual) is
+   what this was built and tested against (see also
+   [Tailscale's own Kindle writeup](https://tailscale.com/blog/tailscale-jailbroken-kindle)).
+3. Generate a non-ephemeral auth key (the Kindle sleeps/reconnects constantly —
+   an ephemeral key gets it dropped from the tailnet every time), start
+   Tailscale on the Kindle in **userspace-networking + SOCKS5/HTTP proxy mode**
+   (kernel TUN doesn't work on at least this device/firmware — confirmed, not
+   assumed), and set `kindle/menu.json`'s server address to the Mac's Tailscale
+   IP. `dash_interactive.sh` already routes its fetches through the local proxy
+   when the Tailscale extension is present — this is purely additive and skipped
+   entirely if it isn't installed.
+4. Bonus: `tailscale up --ssh` (which the extension's start script already runs)
+   gives you root SSH straight into the Kindle once both devices share a
+   tailnet — much faster than USB mass-storage for iterating (which, notably,
+   suspends all Kindle background processes while mounted).
 
 ## Repository Structure
 
 ```
-├── spike/          # Battle-tested working code (v4 final)
-│   ├── kindle-dash/         # Ready-to-copy KUAL extension bundle
-│   │   ├── config.xml       # KUAL metadata (correct <information>/<menus> tags)
-│   │   ├── menu.json        # KUAL menu — set your server IP here
-│   │   └── bin/              # dash_interactive.sh, touch_tap, stop.sh, show_static.sh
-│   ├── dash_interactive.sh  # Main viewer (touch + sleep/wake + navigation)
-│   ├── touch_tap.c          # C touch helper source
-│   ├── touch_tap            # Pre-compiled, stripped ARM binary
-│   ├── view_server.py       # Python HTTP view server
-│   ├── dash_viewer.sh       # Simple display-only loop
-│   ├── stop.sh              # Cleanup script
-│   ├── menu.json            # KUAL menu config (reference — use kindle-dash/menu.json to deploy)
-│   └── fix_linker.sh        # FW 5.16+ ld-linux.so.3 symlink fix
-├── mcp_server/     # kindle-dash-mcp — generalized multi-agent MCP server (D02/D03)
-│   ├── README.md            # Install, config, tool surface, view type reference
-│   └── src/kindle_dash_mcp/ # config, store, renderers, http_server, server, __main__
-├── llm_wiki/       # Research knowledge base (17 interlinked files)
-├── skill/          # Agent skill — operational knowledge for AI assistants
-│   ├── SKILL.md              # 39KB of hard-won Kindle development lessons
-│   ├── references/           # 12 deep-dive reference docs
-│   └── templates/            # Generalized code templates
-├── DECISIONS.md    # Architecture Decision Records (3 ADRs)
-├── POSTMORTEM-2026-07-24.md  # Code review failure — read before modifying working code
-├── LOG.md          # Development chronicle
-└── IDEA.md         # Project pitch and design rationale
+├── kindle/          # KUAL extension: config.xml, menu.json, bin/ (shell viewer + C touch helper)
+├── mcp_server/       # kindle-dash-mcp — the MCP server agents connect to
+│   ├── README.md            # Full install/config/tool/view-type reference
+│   ├── scripts/hermes-setup.sh
+│   └── src/kindle_dash_mcp/  # config, store, renderers, http_server, server, __main__
+└── skill/SKILL.md    # Operational reference for AI agents working on the Kindle-side code
 ```
 
-## Knowledge Base
+## License
 
-The `llm_wiki/` folder contains 17 interlinked research files covering everything learned during development:
-
-- **Platform:** Kindle PW4 hardware, firmware, limitations, Python availability
-- **Touch:** evdev, EVIOCGRAB, coordinate scaling, debounce
-- **Power:** sleep/wake lifecycle, LIPC events, flag files, phantom tap draining
-- **Rendering:** framebuffer, eips, PNG format, Pillow pipeline
-- **Networking:** WiFi quirks, 2.4GHz only, wake reconnect timing
-- **KUAL:** Extension packaging, config.xml format, menu.json
-- **Screensaver:** linkss hack, FW 5.16 incompatibility, alternatives
-- **Architecture:** view protocol, C-vs-shell comparison, similar projects
-- **MCP:** Multi-agent server design (future direction)
-
-## Development Notes
-
-### Before modifying working code — read the postmortem
-
-`POSTMORTEM-2026-07-24.md` documents a session where a code review found 29 "issues" in working code, "fixed" them all, and broke everything. Key lessons:
-- Test every change on hardware — `sh -n` is not enough
-- One fix at a time — deploy, test, confirm, then next
-- Keep the original — always preserve the last-working version
-- Theoretical bugs < working code — if it works, don't fix it
-- Don't recompile a working binary without a specific demonstrated bug
-
-### Architecture decisions
-
-See `DECISIONS.md` for the three ADRs:
-- **D01:** Hybrid shell + C touch helper (not full C, not Python on Kindle)
-- **D02:** Dashboard as MCP server (multi-agent data push)
-- **D03:** MCP server design — typed view types, fixed home grid, no polling
-
-## MCP Server
-
-[`mcp_server/`](mcp_server/) is a standalone MCP server ([`kindle-dash-mcp`](mcp_server/README.md)) that lets any number of MCP-capable agents share one dashboard: each agent pushes data to a designated card slot on the home view via `update_view(path, data)` and `push_home_card(agent_id, ...)`, the server renders PNGs + tap maps with Pillow, and the same Kindle viewer in `spike/` serves them. It's not tied to one agent framework or one Kindle model — screen size, port, and data directory are all configurable. See `mcp_server/README.md` for install and the full tool/view-type reference, and `DECISIONS.md` D02/D03 for the design rationale.
-
-```sh
-cd mcp_server && uv sync && uv run kindle-dash-mcp
-```
-
-## Future Directions
-
-Nothing currently planned beyond what's above — the viewer, touch, sleep/wake, and MCP server are all working end-to-end.
-
-## Tailscale Setup (optional)
-
-Lets the Kindle reach the server from any network, not just home WiFi — Tailscale automatically uses a direct connection when possible (e.g. both devices on the same LAN) and falls back to its relay network otherwise, so one config works everywhere. Purely additive: without it, everything above works exactly as described over plain LAN.
-
-**Prerequisites:**
-- A [Tailscale](https://tailscale.com) account, with the server machine already joined to your tailnet.
-- A Tailscale KUAL extension installed on the Kindle. This repo doesn't bundle one — [mitanshu7/tailscale_kual](https://github.com/mitanshu7/tailscale_kual) is the one this was built and tested against (three daemon modes, an installer, KUAL menu; see also [Tailscale's own writeup](https://tailscale.com/blog/tailscale-jailbroken-kindle)). Install it to `/mnt/us/extensions/tailscale/`.
-
-**Setup:**
-1. Generate an auth key at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys) — **leave "Ephemeral" off** (the Kindle sleeps and reconnects constantly; an ephemeral key gets it removed from the tailnet every time it disconnects).
-2. Drop the key into `/mnt/us/extensions/tailscale/bin/auth.key` on the Kindle.
-3. On the Kindle: **KUAL → Tailscale → Start Tailscaled → Proxy Mode (SOCKS5/HTTP)**, then **Start Tailscale**.
-4. Set `spike/kindle-dash/menu.json`'s `params` (and/or the `dash_interactive.sh` argument) to the server's **Tailscale IP** (`100.x.x.x`), not its LAN IP.
-
-**Why proxy mode, not kernel TUN:** `dash_interactive.sh` auto-starts `tailscaled` in userspace-networking + SOCKS5/HTTP proxy mode (`ensure_tailscale_proxy()`), and routes `curl` through `--proxy http://localhost:1055`. Kernel TUN mode was tested directly on a PW4 (FW 5.16.7) and failed outright — confirmed empirically, not assumed from the extension's own cautious comment. Without a kernel TUN device, plain `curl` can't route through the tailnet at all; only the explicit local proxy works.
-
-**Bonus: SSH access.** Since `tailscale up --ssh` is what registers the device, once both machines share a tailnet you get root SSH straight into the Kindle — `ssh root@<kindle-tailscale-ip>` — no separate SSH server needed. Much faster than USB mass-storage for iterating (which, notably, suspends all background processes including `tailscaled` while mounted — expect to restart it via KUAL after every USB session).
-
-**Known limitation:** `touch_tap` grabs the touchscreen early in `dash_interactive.sh`'s startup, before the code that handles sleep/wake is running. If the Kindle's own screen timeout fires during the (now short, ~6s max) Tailscale connection wait, swipe-to-unlock can break until the orphaned `touch_tap` is killed (over SSH: `kill $(pgrep touch_tap)` — the grab releases automatically). Reduced but not eliminated; see LOG.md 2026-07-31.
-
-## Hardware Requirements
-
-| Component | Spec |
-|---|---|
-| Kindle | Paperwhite 4 (10th Gen, 2018) |
-| Screen | 6" Carta E-Ink, 300 PPI, 1448×1072 |
-| Touch | Capacitive touchscreen |
-| WiFi | 2.4GHz only |
-| Jailbreak | WinterBreak + KUAL installed |
-| Server | Any machine running Python 3.11+ with Pillow, reachable on LAN |
+MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [kdashboard](https://github.com/thecodedose/kdashboard) — Kindle e-ink dashboard with C++ renderer, inspiration for the server-driven inversion
-- [MobileRead forums](https://www.mobileread.com/) — Kindle modding community, linkss, KUAL, firmware knowledge
-- [NiLuJe](https://www.mobileread.com/forums/member.php?u=57856) — linkss, KUAL, and Kindle modding tools
+- [kdashboard](https://github.com/thecodedose/kdashboard) — Kindle e-ink dashboard with a C++ renderer; inspiration for the server-driven inversion this project uses instead
+- [KindleModding](https://kindlemodding.org/) and the [MobileRead](https://www.mobileread.com/) community — jailbreaking, KUAL, and Kindle firmware knowledge

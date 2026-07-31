@@ -1,4 +1,4 @@
-"""MCP tool surface (DECISIONS.md D03): update_view, push_home_card, get_status, list_views.
+"""MCP tool surface: update_view, push_home_card, get_status, list_views.
 
 Agents are data pushers, not UI designers — this module is the only place that
 turns their calls into rendered PNGs on disk. `home` and the `system/` namespace

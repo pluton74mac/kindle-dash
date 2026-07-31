@@ -4,9 +4,8 @@ Everything here is a flat JSON file under config.DATA_DIR, written atomically
 (tmp file + os.replace) so a crash mid-write can't corrupt state the Kindle or
 a restarted MCP subprocess reads next. This is deliberately simple — no
 database, no locking beyond what atomic rename already gives a single-process
-server. See DECISIONS.md D03 ("Process lifecycle") for why disk is the source
-of truth: the Kindle fetches whatever's on disk regardless of whether an agent
-or the MCP subprocess is currently alive.
+server. Disk is the source of truth: the Kindle fetches whatever's on disk
+regardless of whether an agent or the MCP subprocess is currently alive.
 """
 from __future__ import annotations
 

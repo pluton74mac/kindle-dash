@@ -1,7 +1,7 @@
 """Kindle-facing HTTP server: the 3 endpoints the shell viewer polls.
 
-Runs as a background thread inside the MCP process (DECISIONS.md D03 — stdio MCP,
-HTTP as a thread, not a separate daemon). Pure read path over what `store.py` has
+Runs as a background thread inside the MCP process (stdio MCP, HTTP as a
+thread, not a separate daemon). Pure read path over what `store.py` has
 persisted to disk; it doesn't know or care whether an agent is currently connected.
 """
 from __future__ import annotations

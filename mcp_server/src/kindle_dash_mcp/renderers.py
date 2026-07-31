@@ -1,4 +1,4 @@
-"""Pillow renderers for the 5 Phase-1 view types (DECISIONS.md D03).
+"""Pillow renderers for the 5 built-in view types.
 
 Every renderer has the signature `render_X(data: dict) -> (Image, taps, back, refresh_sec)`.
 Agents never touch Pillow, e-ink, or tap-map geometry — they pick a `type` and pass

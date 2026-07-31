@@ -1,6 +1,6 @@
 """Entrypoint: start the HTTP thread, ensure a home view exists, then run the MCP
 stdio server. This blocks on stdio — an agent framework manages this as a subprocess
-(DECISIONS.md D03, "Process lifecycle"), so nothing here needs its own daemonization.
+so nothing here needs its own daemonization.
 """
 from __future__ import annotations
 
