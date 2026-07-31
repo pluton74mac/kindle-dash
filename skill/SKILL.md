@@ -199,29 +199,33 @@ Action types: `navigate`, `refresh`, `toggle`, `custom`, `exit`.
 - **Sanitize image paths** — reject anything that isn't `[a-zA-Z0-9_\-.]` and verify resolved path stays under the served directory. Without this, `/images/../../etc/passwd` reads arbitrary files.
 - **Add Content-Length header** on image responses — more robust than relying on HTTP/1.0 connection close.
 
-## MCP Server Architecture (D03 — multi-agent dashboard)
+## MCP Server (D02/D03 — multi-agent dashboard, BUILT)
 
-When the dashboard evolves from a single server to a multi-agent MCP server, the architecture changes. The "agent newspaper" model: each agent has a designated card slot on the home view, and a namespaced view tree (`sports/readiness`, `life/habits`, `system/cron`). Agents are data pushers — they call `update_view(path, {type: "metric_dashboard", ...})` and the MCP renders via builtin Pillow renderers per view type. Cronjobs are the trigger — agents don't sit in loops.
+The design in D02/D03 is implemented and working: `mcp_server/` (project root, sibling to `spike/`) is a real, generalized MCP server — not tied to any one agent framework, usable by anyone with a Kindle and an MCP-capable agent. The "agent newspaper" model: each agent gets a designated card slot on the home view (stable, first-registration order, persisted to disk) and a namespaced view tree (`sports/readiness`, `life/habits`, ...). Agents are data pushers — they call `update_view(path, {type: "metric_dashboard", ...})` and the server renders via builtin Pillow renderers per view type. Cronjobs are the trigger — agents don't sit in loops.
 
-**Key design decisions (see `references/mcp-server-design.md` for full spec):**
-- **Typed view types (not freeform text or widget DSL):** 5 generic types in Phase 1 (status_grid, metric_dashboard, text_list, chart_view, progress_view). Agents pick a type and pass matching structured data. Phase 2 adds agent-domain types.
-- **No polling:** Kindle fetches on interaction only (tap, refresh, wake). E-ink holds the image when idle. The auto-refresh timer from the spike was unnecessary.
-- **Stdio MCP (not standalone daemon):** the agent-managed subprocess. HTTP server runs as background thread inside the MCP. PNGs persisted to disk survive process restarts. Kindle offline cache covers the agent restart gaps.
-- **No custom renderers:** Builtin types only. New types = MCP code change. Safe because cronjobs are deterministic — no surprise data shapes.
-- **Home view = fixed grid of agent slots:** `push_home_card(agent_id, title, summary, nav_target)`. No ordering, no priority.
+**Key design decisions (implemented as described):**
+- **Typed view types (not freeform text or widget DSL):** all 5 Phase 1 types are fully implemented in `mcp_server/src/kindle_dash_mcp/renderers.py` (status_grid, metric_dashboard, text_list, chart_view, progress_view). Agents pick a type and pass matching structured data.
+- **No polling:** Kindle fetches on interaction only (tap, refresh, wake). E-ink holds the image when idle.
+- **Stdio MCP (not standalone daemon):** agent-managed subprocess (`mcp==1.9.4`'s `FastMCP`, stdio transport). HTTP server runs as a background thread inside the same process. PNGs + view/registry metadata persisted to disk (`store.py`) survive process restarts. Kindle offline cache covers agent-restart gaps.
+- **No custom renderers:** builtin types only. New types = code change to `renderers.py`'s `RENDERERS` dict.
+- **Home view = grid of agent slots:** `push_home_card(agent_id, title, summary, nav_target)`. Slot assignment is stable (first-registration order, persisted), not fixed-per-named-agent like the original spike's 4 hardcoded buttons — any number of agents can register. Beyond `KINDLE_DASH_HOME_MAX_CARDS` (default 8), extras collapse into a "+N more" tile linking to an auto-generated `system/agents` overview.
+- **Generalized, not hardcoded to one Kindle:** screen dimensions, HTTP port, and data dir are all env vars (`KINDLE_DASH_WIDTH`/`HEIGHT`/`PORT`/`DATA_DIR`) — defaults match PW4, but nothing assumes it.
 
-**the agent config entry:**
-```yaml
-mcp_servers:
-  kindle-dash:
-    command: "python3"
-    args: ["/path/to/server.py"]
-    idle_timeout_seconds: 0   # keep alive indefinitely
-    tools:
-      include: [update_view, push_home_card, get_status, list_views]
+**Critical protocol detail not in the original design doc:** the Kindle's `hit_test()` awk parser in `dash_interactive.sh` scans the `/view` JSON response *line-by-line* and expects each field and each tap object's closing `}` on its own line. The HTTP server's JSON responses **must** use `json.dumps(payload, indent=2)` — compact single-line JSON silently breaks tap navigation (no error, taps just never hit). See `mcp_server/src/kindle_dash_mcp/http_server.py`'s `_json()` method.
+
+**Generic MCP client config** (any framework, not tied to one agent's config.yaml format):
+```json
+{
+  "mcpServers": {
+    "kindle-dash": {
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/mcp_server", "kindle-dash-mcp"]
+    }
+  }
+}
 ```
 
-See `references/mcp-server-design.md` for the full design spec (tools, params, view type schemas, data flow, lifecycle). See `templates/mcp_server_skeleton.py` for a starting-point server showing the stdio + HTTP thread + renderer pattern.
+See `mcp_server/README.md` for full install/config/tool docs and `mcp_server/src/kindle_dash_mcp/` for the implementation (`config.py`, `store.py`, `renderers.py`, `http_server.py`, `server.py`, `__main__.py`). `references/mcp-server-design.md` still has the original design-grill rationale (why typed views, why stdio, why no polling) if you want the "why" behind what's now built.
 
 ## Power Button Sleep/Wake Lifecycle (v4 final — WORKING)
 

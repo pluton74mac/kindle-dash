@@ -17,8 +17,9 @@ A server-driven e-ink dashboard on a jailbroken Kindle. The Kindle is a dumb dis
 
 The ready-to-copy KUAL extension bundle (`config.xml` + `menu.json` + `bin/`) lives in [`spike/kindle-dash/`](spike/kindle-dash/) — see Quick Start below.
 
+**Also built:** a generalized multi-agent MCP server — [`mcp_server/`](mcp_server/), see [Future Directions](#mcp-server) below and [`mcp_server/README.md`](mcp_server/README.md).
+
 **Not yet built:**
-- MCP server (multi-agent data push — see [DECISIONS.md](DECISIONS.md) D02/D03)
 - Custom screensaver (abandoned — linkss unsupported on FW 5.16+)
 
 ## Architecture
@@ -107,6 +108,9 @@ A pre-compiled, stripped `spike/touch_tap` binary is included — you only need 
 │   ├── stop.sh              # Cleanup script
 │   ├── menu.json            # KUAL menu config (reference — use kindle-dash/menu.json to deploy)
 │   └── fix_linker.sh        # FW 5.16+ ld-linux.so.3 symlink fix
+├── mcp_server/     # kindle-dash-mcp — generalized multi-agent MCP server (D02/D03)
+│   ├── README.md            # Install, config, tool surface, view type reference
+│   └── src/kindle_dash_mcp/ # config, store, renderers, http_server, server, __main__
 ├── llm_wiki/       # Research knowledge base (17 interlinked files)
 ├── skill/          # Agent skill — operational knowledge for AI assistants
 │   ├── SKILL.md              # 39KB of hard-won Kindle development lessons
@@ -150,13 +154,17 @@ See `DECISIONS.md` for the three ADRs:
 - **D02:** Dashboard as MCP server (multi-agent data push)
 - **D03:** MCP server design — typed view types, fixed home grid, no polling
 
+## MCP Server
+
+[`mcp_server/`](mcp_server/) is a standalone MCP server ([`kindle-dash-mcp`](mcp_server/README.md)) that lets any number of MCP-capable agents share one dashboard: each agent pushes data to a designated card slot on the home view via `update_view(path, data)` and `push_home_card(agent_id, ...)`, the server renders PNGs + tap maps with Pillow, and the same Kindle viewer in `spike/` serves them. It's not tied to one agent framework or one Kindle model — screen size, port, and data directory are all configurable. See `mcp_server/README.md` for install and the full tool/view-type reference, and `DECISIONS.md` D02/D03 for the design rationale.
+
+```sh
+cd mcp_server && uv sync && uv run kindle-dash-mcp
+```
+
 ## Future Directions
 
-### MCP Server
-
-The dashboard is designed to evolve from a single-server model to a multi-agent MCP server. Each agent pushes data to a designated card slot on the home view via `update_view(path, data)`. The MCP renders PNGs using builtin Pillow renderers per view type. Cronjobs trigger updates — agents don't sit in loops.
-
-Full design spec: `llm_wiki/mcp-server-design.md` and `skill/references/mcp-server-design.md`.
+Nothing currently planned beyond what's above — the viewer, touch, sleep/wake, and MCP server are all working end-to-end.
 
 ## Tailscale Setup (optional)
 

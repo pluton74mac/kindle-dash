@@ -127,3 +127,28 @@ Sports Coach Agent    Life Coach Agent    Future Agent
 **Known limitation:** `touch_tap` grabs the touchscreen before `dash_interactive.sh`'s sleep/wake handling is active, so a screen timeout during the (bounded, ~6s) Tailscale connection wait can leave swipe-to-unlock broken until the orphaned process is killed. Reduced, not eliminated. See LOG.md 2026-07-31.
 
 **Reference:** LOG.md (2026-07-31) has the full investigation, including the empirical TUN test and the touch-grab incident.
+
+## 2026-07-31 — D05: MCP server built per D02/D03, generalized beyond one agent framework
+
+**Decision:** Implemented `mcp_server/` (package `kindle-dash-mcp`) exactly per the D02/D03 design, with one deliberate generalization: nothing in it assumes a specific agent framework, a specific set of agents, or PW4-specific hardware. It's meant to be usable by anyone with a jailbroken Kindle and an MCP-capable agent, not just this project's original two agents.
+
+**Context:** D02/D03 specified the architecture (typed view types, stdio MCP + HTTP thread, disk-backed state, fixed-but-now-dynamic home slots) but were never implemented — `skill/templates/mcp_server_skeleton.py` was a stub with `# ... draw cards ...` comments in place of real renderers. This session built the real thing.
+
+**What changed from the D03 spec vs. what was kept:**
+- **Kept as designed:** 4 MCP tools (`update_view`, `push_home_card`, `get_status`, `list_views`), 3 HTTP endpoints (`/view`, `/images`, `/health`), 5 Phase-1 view types, stdio transport, no polling, no custom-renderer escape hatch, disk as source of truth.
+- **Generalized — home grid slots:** D03's home grid assumed a small fixed set of named agents. Implemented instead as *dynamic* slot assignment: any `agent_id` gets the next free slot on first `push_home_card()` call, stable thereafter (persisted in `home_cards.json`). Beyond `KINDLE_DASH_HOME_MAX_CARDS` (default 8), extra agents collapse into a "+N more" tile linking to an auto-generated `system/agents` overview (a `text_list` view built the same way `home` is). This is what makes "anyone with any number of agents" actually work, not just the original two.
+- **Generalized — hardware assumptions:** screen width/height, HTTP port/host, and data directory are all environment variables (`KINDLE_DASH_WIDTH`/`HEIGHT`/`PORT`/`HOST`/`DATA_DIR`), not hardcoded PW4 constants. Nothing else in the rendering or serving code assumes 1072x1448.
+- **Reserved namespace, not in original spec:** `home` and `system/*` are reserved — `update_view()` rejects direct writes to them with a clear error pointing at `push_home_card()`. This wasn't in D03 but was needed once home became dynamically composed rather than a single renderer agents could theoretically clobber.
+
+**MCP SDK version — pinned to 1.9.4, not the newer 2.0.0 line:** `mcp` 2.0.0 (released after D03 was written) restructures the SDK — `FastMCP` moves and is renamed, the decorator API changes. For a server meant to be broadly reusable, the 1.x `FastMCP` API is what the overwhelming majority of existing MCP client docs/examples target; 2.0 is too new to assume client-side familiarity. Revisit if 2.0 becomes the de facto standard.
+
+**Protocol detail that isn't obvious from the design docs and cost a real bug during testing:** the Kindle's `hit_test()` in `dash_interactive.sh` parses the `/view` JSON with a line-by-line awk scanner (see SKILL.md, "No `jq` on Kindle"). `http_server.py` must serialize with `json.dumps(payload, indent=2)` — compact single-line JSON parses "successfully" (no error) but every tap silently fails to hit, because the awk script's `/}/`-terminated per-record scan never sees a matching line. This is now a comment directly on the serialization call, not just documentation, since it's the kind of "harmless-looking" simplification a future cleanup pass could reintroduce.
+
+**Verification:** all 4 tools exercised directly (Python), all 5 renderers visually inspected (rendered PNGs read back and checked), HTTP endpoints hit via curl including a path-traversal attempt (403/404 as expected), a full real MCP stdio round-trip via `mcp.client.stdio` (spawn subprocess, `list_tools()`, `call_tool()` for two tools), and **confirmed end-to-end on the physical Kindle, same session**: the deployed KUAL bundle (unmodified, `menu.json` already pointed at the Mac's Tailscale IP from the earlier Tailscale session) fetched `home`, navigated to two different agents' cards (two different view types — metric_dashboard and progress_view), and navigated back, all against `kindle-dash-mcp` instead of `spike/view_server.py`. See LOG.md 2026-07-31 for the access-log evidence.
+
+**Rejected alternatives:**
+- **`mcp` 2.0.0 SDK:** rejected for now — see above. Not a permanent rejection, just too new for a "generalized for anyone" server today.
+- **Fixed/hardcoded home slots per named agent (the literal D03 spec):** rejected in favor of dynamic assignment — a fixed slot list is definitionally incompatible with "for anyone with any agents," not just this project's original two.
+- **Custom/pluggable renderers:** re-confirmed rejected, same rationale as D03 (deterministic cron-driven data doesn't need it, and it would reopen the exact scope D02 was trying to keep out of agents' hands).
+
+**Reference:** `mcp_server/README.md` for usage, `mcp_server/src/kindle_dash_mcp/` for implementation, LOG.md (2026-07-31) for the build session.
