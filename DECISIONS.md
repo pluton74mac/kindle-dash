@@ -105,3 +105,25 @@ Sports Coach Agent    Life Coach Agent    Future Agent
 - **Custom renderers / raw_image escape hatch:** Violates D02, unnecessary given deterministic cron tasks.
 
 **Reference:** Full grill session in LOG.md (2026-07-24). MCP design spec at `llm_wiki/mcp-server-design.md`.
+
+## 2026-07-31 — D04: Tailscale via userspace proxy mode, not kernel TUN
+
+**Decision:** The Kindle reaches the server over Tailscale using userspace-networking + an explicit local SOCKS5/HTTP proxy (`--socks5-server`, `--outbound-http-proxy-listen`), with `curl` in `dash_interactive.sh` routed through `--proxy http://localhost:1055`. `SERVER` is the server's Tailscale IP, used identically whether the Kindle is on the home LAN or away — Tailscale itself chooses a direct path or its DERP relay.
+
+**Context:** The goal (per the developer, 2026-07-31) is for the dashboard to work "from any network," not just home WiFi. Kernel TUN mode (a real virtual network interface, transparent to all apps) was the alternative — if it worked, no proxy config would be needed anywhere.
+
+**Rationale:**
+- **Kernel TUN tested directly on hardware and failed.** `/dev/net/tun` exists as a device node on this PW4 (FW 5.16.7), but `tailscaled -tun <default>` fails to start against it — confirmed empirically via SSH, not inferred from documentation. Userspace-networking mode is the only one that actually connects.
+- **Without a kernel TUN interface, an explicit proxy is required** for any ordinary Linux process (`curl`) to route through the tailnet — userspace-networking alone gives tailscaled its own isolated network stack that other processes can't see.
+- **One SERVER config for both home and away**, rather than maintaining separate LAN/Tailscale URLs, by always using the Tailscale IP + local proxy. Confirmed Tailscale prefers a direct LAN path when available (`tailscale ping` showed a direct 192.168.x.x round-trip, not just DERP) and falls back to relay otherwise — so this doesn't sacrifice home-LAN performance.
+- **Tailscale SSH as a side effect:** since the extension's `start_tailscale.sh` already runs `tailscale up --ssh`, this also gives root SSH into the Kindle once both devices share a tailnet — a major workflow improvement over USB mass-storage for iteration (see LOG.md 2026-07-31).
+- **Purely additive:** `ensure_tailscale_proxy()` no-ops entirely if the Tailscale extension isn't installed (`[ ! -x "$TAILSCALED_BIN" ]`) — the dashboard's original LAN-only behavior is unaffected for anyone who doesn't set it up.
+
+**Rejected alternatives:**
+- **Kernel TUN mode:** Would be the cleaner design (no proxy, no per-app config) but does not work on this hardware/firmware — not a matter of preference.
+- **Tailscale Funnel/Serve (server-side only, no Kindle-side client):** Considered before hardware testing began, as a way to avoid any Kindle-side networking risk entirely (confirmed this Kindle's `curl` has real HTTPS/OpenSSL support, so it would have worked). Not pursued once the Tailscale extension was discovered already installed and working on the device — using what's already there was simpler than standing up Funnel. Worth reconsidering if a future user doesn't want a Tailscale client on the Kindle at all.
+- **A fixed sleep after starting tailscaled:** Tried first: unreliable, since actual DERP connection time varies (~6-20s+ observed). Replaced with polling the server's `/health` through the proxy, bounded at 6s (see the touch-grab incident in LOG.md 2026-07-31 for why it isn't bounded higher).
+
+**Known limitation:** `touch_tap` grabs the touchscreen before `dash_interactive.sh`'s sleep/wake handling is active, so a screen timeout during the (bounded, ~6s) Tailscale connection wait can leave swipe-to-unlock broken until the orphaned process is killed. Reduced, not eliminated. See LOG.md 2026-07-31.
+
+**Reference:** LOG.md (2026-07-31) has the full investigation, including the empirical TUN test and the touch-grab incident.

@@ -13,12 +13,12 @@ A server-driven e-ink dashboard on a jailbroken Kindle. The Kindle is a dumb dis
 - Power button sleep/wake lifecycle (Kindle sleeps naturally, wakes to dashboard)
 - Offline cache — network down → last view stays on screen
 - Clean exit to Kindle home
+- **Tailscale support (optional, additive)** — the Kindle reaches the server over Tailscale instead of a plain LAN IP, so the same setup works both at home and away. See [Tailscale Setup](#tailscale-setup-optional) below.
 
 The ready-to-copy KUAL extension bundle (`config.xml` + `menu.json` + `bin/`) lives in [`spike/kindle-dash/`](spike/kindle-dash/) — see Quick Start below.
 
 **Not yet built:**
 - MCP server (multi-agent data push — see [DECISIONS.md](DECISIONS.md) D02/D03)
-- Tailscale mesh networking (remote access beyond LAN)
 - Custom screensaver (abandoned — linkss unsupported on FW 5.16+)
 
 ## Architecture
@@ -158,14 +158,25 @@ The dashboard is designed to evolve from a single-server model to a multi-agent 
 
 Full design spec: `llm_wiki/mcp-server-design.md` and `skill/references/mcp-server-design.md`.
 
-### Tailscale Mesh Networking
+## Tailscale Setup (optional)
 
-Currently the Kindle connects to the server over local WiFi (2.4GHz only on PW4). A future direction is running Tailscale on both the Kindle and the server, creating a mesh VPN that allows the dashboard to work from any network — not just home LAN.
+Lets the Kindle reach the server from any network, not just home WiFi — Tailscale automatically uses a direct connection when possible (e.g. both devices on the same LAN) and falls back to its relay network otherwise, so one config works everywhere. Purely additive: without it, everything above works exactly as described over plain LAN.
 
-The Kindle runs ARM Linux, so Tailscale's ARM binary (userspace WireGuard) may work. Research needed on:
-- Tailscale ARM binary compatibility with Kindle's musl-based userspace
-- Performance impact on e-ink display refresh latency
-- Sleep/wake behavior with VPN tunnel active
+**Prerequisites:**
+- A [Tailscale](https://tailscale.com) account, with the server machine already joined to your tailnet.
+- A Tailscale KUAL extension installed on the Kindle. This repo doesn't bundle one — [mitanshu7/tailscale_kual](https://github.com/mitanshu7/tailscale_kual) is the one this was built and tested against (three daemon modes, an installer, KUAL menu; see also [Tailscale's own writeup](https://tailscale.com/blog/tailscale-jailbroken-kindle)). Install it to `/mnt/us/extensions/tailscale/`.
+
+**Setup:**
+1. Generate an auth key at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys) — **leave "Ephemeral" off** (the Kindle sleeps and reconnects constantly; an ephemeral key gets it removed from the tailnet every time it disconnects).
+2. Drop the key into `/mnt/us/extensions/tailscale/bin/auth.key` on the Kindle.
+3. On the Kindle: **KUAL → Tailscale → Start Tailscaled → Proxy Mode (SOCKS5/HTTP)**, then **Start Tailscale**.
+4. Set `spike/kindle-dash/menu.json`'s `params` (and/or the `dash_interactive.sh` argument) to the server's **Tailscale IP** (`100.x.x.x`), not its LAN IP.
+
+**Why proxy mode, not kernel TUN:** `dash_interactive.sh` auto-starts `tailscaled` in userspace-networking + SOCKS5/HTTP proxy mode (`ensure_tailscale_proxy()`), and routes `curl` through `--proxy http://localhost:1055`. Kernel TUN mode was tested directly on a PW4 (FW 5.16.7) and failed outright — confirmed empirically, not assumed from the extension's own cautious comment. Without a kernel TUN device, plain `curl` can't route through the tailnet at all; only the explicit local proxy works.
+
+**Bonus: SSH access.** Since `tailscale up --ssh` is what registers the device, once both machines share a tailnet you get root SSH straight into the Kindle — `ssh root@<kindle-tailscale-ip>` — no separate SSH server needed. Much faster than USB mass-storage for iterating (which, notably, suspends all background processes including `tailscaled` while mounted — expect to restart it via KUAL after every USB session).
+
+**Known limitation:** `touch_tap` grabs the touchscreen early in `dash_interactive.sh`'s startup, before the code that handles sleep/wake is running. If the Kindle's own screen timeout fires during the (now short, ~6s max) Tailscale connection wait, swipe-to-unlock can break until the orphaned `touch_tap` is killed (over SSH: `kill $(pgrep touch_tap)` — the grab releases automatically). Reduced but not eliminated; see LOG.md 2026-07-31.
 
 ## Hardware Requirements
 

@@ -22,6 +22,10 @@ SCREEN_W=1072
 SCREEN_H=1448
 SLEEP_FLAG="${CACHE_DIR}/.sleep_flag"
 WAKE_FLAG="${CACHE_DIR}/.wake_flag"
+TAILSCALED_BIN="/mnt/us/extensions/tailscale/bin/tailscaled"
+TAILSCALED_STATEDIR="/mnt/us/extensions/tailscale/bin/"
+TAILSCALE_PROXY="localhost:1055"
+CURL_PROXY_ARGS=""
 
 mkdir -p "$CACHE_DIR"
 
@@ -39,6 +43,67 @@ json_num() {
     grep -o "\"$2\"[[:space:]]*:[[:space:]]*[0-9]*" "$1" 2>/dev/null | head -1 | sed "s/.*:[[:space:]]*//"
 }
 
+# ── Tailscale (optional) ──
+# If a Tailscale extension is installed (SOCKS5/HTTP proxy mode), start it and
+# route curl through the local proxy. This lets SERVER be a Tailscale IP
+# (100.x.x.x) that works both on the home LAN and away from it — Tailscale
+# picks a direct path when possible, falling back to its DERP relay otherwise.
+# Kernel TUN networking is NOT used here: confirmed unavailable on this
+# PW4/FW5.16.7 build ("tailscaled failed — kernel TUN may not be supported"),
+# so userspace-networking + an explicit proxy is the only path that works.
+# If the Tailscale extension isn't installed, this is skipped entirely and
+# curl falls back to plain LAN-only requests — Tailscale is purely additive.
+ensure_tailscale_proxy() {
+    if [ ! -x "$TAILSCALED_BIN" ]; then
+        log "Tailscale not installed — LAN-only mode"
+        return 1
+    fi
+
+    # If a tailscaled proxy is already up and can reach the server, don't
+    # bounce it. Restarting kills any active Tailscale SSH session (the SSH
+    # server runs inside tailscaled itself) and costs a real reconnect delay
+    # for no benefit — an already-healthy proxy is already what we need.
+    if curl -fsS --connect-timeout 2 --max-time 3 --proxy "http://${TAILSCALE_PROXY}" "${SERVER}/health" >/dev/null 2>&1; then
+        CURL_PROXY_ARGS="--proxy http://${TAILSCALE_PROXY}"
+        log "Tailscale proxy already up at ${TAILSCALE_PROXY}"
+        return 0
+    fi
+
+    log "Starting tailscaled (proxy mode) for Tailscale connectivity..."
+    pkill tailscaled 2>/dev/null
+    sleep 2
+    rm -f /var/run/tailscale/tailscaled.sock
+
+    nohup "$TAILSCALED_BIN" --statedir="$TAILSCALED_STATEDIR" -tun userspace-networking \
+        --socks5-server="$TAILSCALE_PROXY" \
+        --outbound-http-proxy-listen="$TAILSCALE_PROXY" >> "$LOG_FILE" 2>&1 &
+
+    sleep 3
+    CURL_PROXY_ARGS="--proxy http://${TAILSCALE_PROXY}"
+
+    # tailscaled needs real time to reach the control plane and connect to a
+    # DERP relay before the proxy can actually route anywhere — observed ~20s
+    # from cold start. Give it a bounded head start rather than either
+    # guessing with a fixed sleep (too short = first fetch fails) or waiting
+    # for full readiness (too long = touch_tap holds its EVIOCGRAB grab with
+    # nothing yet watching SLEEP_FLAG, so a screen-timeout mid-wait leaves
+    # swipe-to-unlock broken — hit on hardware 2026-07-31, see LOG.md). The
+    # normal fetch fallback (cached image) plus the next tap's retry already
+    # cover a still-cold tailnet, so this only needs to catch the common case.
+    log "Waiting for Tailscale to connect..."
+    start_ts=$(date +%s)
+    waited=0
+    while [ $waited -lt 6 ]; do
+        if curl -fsS --connect-timeout 2 --max-time 3 $CURL_PROXY_ARGS "${SERVER}/health" >/dev/null 2>&1; then
+            log "Tailscale proxy ready at ${TAILSCALE_PROXY} (connected after $(($(date +%s) - start_ts))s)"
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    log "Tailscale proxy started but server not reachable after ${waited}s — continuing anyway (cached view / next tap will retry)"
+}
+
 # Fetch a view from the server
 fetch_view() {
     path="$1"
@@ -51,7 +116,7 @@ fetch_view() {
 
     log "Fetching: $url"
 
-    curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$json_tmp" 2>>"$LOG_FILE"
+    curl -fsSL --connect-timeout 10 --max-time 30 $CURL_PROXY_ARGS "$url" -o "$json_tmp" 2>>"$LOG_FILE"
     if [ $? -ne 0 ]; then
         log "ERROR: Failed to fetch JSON"
         return 1
@@ -68,7 +133,7 @@ fetch_view() {
 
     img_url="${SERVER}${image_path}"
     log "Fetching image: $img_url"
-    curl -fsSL --connect-timeout 10 --max-time 30 "$img_url" -o "$png_tmp" 2>>"$LOG_FILE"
+    curl -fsSL --connect-timeout 10 --max-time 30 $CURL_PROXY_ARGS "$img_url" -o "$png_tmp" 2>>"$LOG_FILE"
     if [ $? -ne 0 ]; then
         log "ERROR: Failed to fetch PNG"
         return 1
@@ -272,6 +337,7 @@ mkfifo "$TOUCH_FIFO" 2>/dev/null
 # Start touch helper and power watcher
 start_touch_helper
 start_power_watcher
+ensure_tailscale_proxy
 
 log "Waiting 3s for WiFi..."
 sleep 3
